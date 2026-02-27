@@ -5,3 +5,12 @@ checkpoints/
 logs/
 data/
 *.pyc
+.dist/
+results/
+explanations/
+
+# Large dataset folders (don't push to GitHub)
+Fake News Dataset/
+Fake News Detection Dataset/
+Fake or Real News Dataset/
+ISOT Fake News Dataset/
