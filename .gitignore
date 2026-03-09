@@ -4,6 +4,10 @@ __pycache__/
 checkpoints/
 logs/
 data/
+!src/data/
+!src/data/__init__.py
+!src/data/dataset.py
+!src/data/preprocessing.py
 *.pyc
 .dist/
 results/
