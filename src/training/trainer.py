@@ -19,7 +19,11 @@ import torch.nn as nn
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
-from torch.cuda.amp import autocast, GradScaler
+# Modern PyTorch AMP API (compatible with PyTorch 2.x+)
+try:
+    from torch.amp import autocast, GradScaler
+except ImportError:
+    from torch.cuda.amp import autocast, GradScaler
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, StepLR
 from torch.utils.tensorboard import SummaryWriter
@@ -72,7 +76,7 @@ class Trainer:
         # Training components
         self.criterion = nn.CrossEntropyLoss()
         self.optimizer = self._build_optimizer()
-        self.scaler = GradScaler() if self.train_cfg.get("fp16", False) else None
+        self.scaler = GradScaler('cuda') if self.train_cfg.get("fp16", False) and torch.cuda.is_available() else None
 
         # Metrics
         self.metrics_calc = MetricsCalculator(
@@ -296,7 +300,7 @@ class Trainer:
 
             # Forward pass (with optional mixed precision)
             if self.scaler:
-                with autocast():
+                with autocast('cuda'):
                     outputs = self.model(
                         input_ids=input_ids,
                         attention_mask=attention_mask,
@@ -368,7 +372,7 @@ class Trainer:
             labels = batch["label"].to(self.device)
 
             if self.scaler:
-                with autocast():
+                with autocast('cuda'):
                     outputs = self.model(
                         input_ids=input_ids,
                         attention_mask=attention_mask,
