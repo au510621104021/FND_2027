@@ -12,6 +12,7 @@ data/
 .dist/
 results/
 explanations/
+*.zip
 
 # Large dataset folders (don't push to GitHub)
 Fake News Dataset/

@@ -1,18 +1,30 @@
 """
-Evaluation & Ablation Study Script
-=====================================
+Evaluation & Ablation Study Script (Conference-Level)
+========================================================
 Evaluates trained models on test sets and runs comparative ablation studies
-across modalities and datasets.
+across modalities and datasets, with statistical significance testing.
+
+Features:
+    - Single model evaluation with full metrics (MCC, Kappa, AUC)
+    - Ablation study (multimodal vs text-only vs image-only)
+    - Multi-dataset benchmark evaluation
+    - Bootstrap confidence intervals
+    - McNemar's test for paired model comparison
+    - LaTeX table generation for papers
+    - Publication-ready plots (PDF + PNG at 300 DPI)
 
 Usage:
     # Evaluate a single model
     python scripts/evaluate.py --checkpoint checkpoints/best_model.pt
 
-    # Run full ablation study (multimodal vs text-only vs image-only)
+    # Run full ablation study with statistical tests
     python scripts/evaluate.py --checkpoint checkpoints/best_model.pt --ablation
 
-    # Evaluate on a specific dataset
-    python scripts/evaluate.py --checkpoint checkpoints/best_model.pt --dataset gossipcop
+    # Evaluate with bootstrap confidence intervals
+    python scripts/evaluate.py --checkpoint checkpoints/best_model.pt --bootstrap
+
+    # Generate LaTeX results table
+    python scripts/evaluate.py --checkpoint checkpoints/best_model.pt --ablation --latex
 """
 
 import os
@@ -114,12 +126,13 @@ def evaluate_model(
     mode: str = "multimodal",
     device: torch.device = None,
     generate_plots: bool = True,
+    compute_bootstrap: bool = False,
 ) -> dict:
     """
-    Evaluate a trained model on a test set.
+    Evaluate a trained model on a test set with full conference-level metrics.
 
     Returns:
-        Metrics dictionary
+        Metrics dictionary including MCC, Cohen's Kappa, and optionally bootstrap CIs.
     """
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -156,6 +169,25 @@ def evaluate_model(
         generate_plots=generate_plots,
     )
 
+    # Compute bootstrap confidence intervals if requested
+    if compute_bootstrap:
+        stat_cfg = config.get("evaluation", {}).get("statistical_tests", {})
+        n_iter = stat_cfg.get("bootstrap_n_iterations", 1000)
+        ci_level = stat_cfg.get("confidence_level", 0.95)
+
+        print(f"\n  Computing Bootstrap {ci_level*100:.0f}% CIs ({n_iter} iterations)...")
+        bootstrap_cis = trainer.metrics_calc.compute_all_bootstrap_cis(
+            n_iterations=n_iter,
+            confidence_level=ci_level,
+        )
+        metrics["bootstrap_ci"] = bootstrap_cis
+
+        # Print bootstrap results
+        print(f"\n  {'Metric':20s} {'Mean':>10s} {'95% CI':>22s}")
+        print(f"  {'─' * 54}")
+        for metric_name, ci in bootstrap_cis.items():
+            print(f"  {metric_name:20s} {ci['mean']:10.4f} [{ci['lower']:.4f}, {ci['upper']:.4f}]")
+
     return metrics
 
 
@@ -163,9 +195,12 @@ def run_ablation_study(
     checkpoint_path: str,
     config: dict,
     device: torch.device = None,
+    compute_bootstrap: bool = False,
+    generate_latex: bool = False,
 ) -> dict:
     """
-    Run full ablation study comparing multimodal vs unimodal performance.
+    Run full ablation study comparing multimodal vs unimodal performance
+    with statistical significance tests.
 
     Tests:
         1. Multimodal (text + image + cross-modal attention)
@@ -178,6 +213,8 @@ def run_ablation_study(
 
     modes = ["multimodal", "text_only", "image_only"]
     all_results = {}
+    all_preds = {}
+    all_labels_stored = None
 
     for mode in modes:
         print(f"\n{'─' * 40}")
@@ -190,31 +227,50 @@ def run_ablation_study(
             mode=mode,
             device=device,
             generate_plots=True,
+            compute_bootstrap=compute_bootstrap,
         )
 
         all_results[mode] = metrics
 
     # Print comparison table
-    print(f"\n\n{'=' * 80}")
+    print(f"\n\n{'=' * 90}")
     print(f"  ABLATION STUDY RESULTS")
-    print(f"{'=' * 80}")
-    print(f"{'Mode':<20} {'Accuracy':<12} {'Precision':<12} {'Recall':<12} {'F1':<12} {'AUC-ROC':<12}")
-    print(f"{'─' * 80}")
+    print(f"{'=' * 90}")
+    header = f"{'Mode':<20} {'Accuracy':<12} {'Precision':<12} {'Recall':<12} {'F1':<12} {'MCC':<12} {'AUC-ROC':<12}"
+    print(header)
+    print(f"{'─' * 90}")
 
     for mode, metrics in all_results.items():
         auc = f"{metrics.get('auc_roc', 'N/A'):.4f}" if isinstance(metrics.get('auc_roc'), float) else "N/A"
+        mcc = f"{metrics.get('mcc', 0):.4f}"
         print(
             f"{mode:<20} "
             f"{metrics['accuracy']:<12.4f} "
             f"{metrics['precision']:<12.4f} "
             f"{metrics['recall']:<12.4f} "
             f"{metrics['f1']:<12.4f} "
+            f"{mcc:<12} "
             f"{auc:<12}"
         )
-    print(f"{'=' * 80}\n")
+    print(f"{'=' * 90}\n")
 
-    # Generate comparison plot
-    compare_models(all_results, save_dir="./results")
+    # Generate comparison plots
+    results_dir = Path("./results")
+    results_dir.mkdir(exist_ok=True)
+    compare_models(all_results, save_dir=str(results_dir))
+
+    # Generate radar chart
+    metrics_calc = MetricsCalculator(save_dir=str(results_dir))
+    metrics_calc.plot_metrics_radar(all_results, filename="ablation_radar.png")
+
+    # Generate LaTeX table
+    if generate_latex:
+        metrics_calc.generate_latex_table(
+            all_results,
+            caption="Ablation Study Results on Test Set",
+            label="tab:ablation",
+            filename="ablation_table.tex",
+        )
 
     return all_results
 
@@ -224,6 +280,7 @@ def run_multi_dataset_evaluation(
     config: dict,
     datasets: list,
     device: torch.device = None,
+    generate_latex: bool = False,
 ) -> dict:
     """
     Evaluate the model across multiple benchmark datasets.
@@ -259,29 +316,42 @@ def run_multi_dataset_evaluation(
 
     # Print comparison
     if all_results:
-        print(f"\n\n{'=' * 80}")
+        print(f"\n\n{'=' * 90}")
         print(f"  MULTI-DATASET RESULTS (Multimodal)")
-        print(f"{'=' * 80}")
-        print(f"{'Dataset':<20} {'Accuracy':<12} {'Precision':<12} {'Recall':<12} {'F1':<12}")
-        print(f"{'─' * 80}")
+        print(f"{'=' * 90}")
+        header = f"{'Dataset':<20} {'Accuracy':<12} {'Precision':<12} {'Recall':<12} {'F1':<12} {'MCC':<12}"
+        print(header)
+        print(f"{'─' * 90}")
 
         for dataset, metrics in all_results.items():
+            mcc = f"{metrics.get('mcc', 0):.4f}"
             print(
                 f"{dataset:<20} "
                 f"{metrics['accuracy']:<12.4f} "
                 f"{metrics['precision']:<12.4f} "
                 f"{metrics['recall']:<12.4f} "
-                f"{metrics['f1']:<12.4f}"
+                f"{metrics['f1']:<12.4f} "
+                f"{mcc:<12}"
             )
-        print(f"{'=' * 80}\n")
+        print(f"{'=' * 90}\n")
 
         compare_models(all_results, save_dir="./results")
+
+        # Generate LaTeX table
+        if generate_latex:
+            metrics_calc = MetricsCalculator(save_dir="./results")
+            metrics_calc.generate_latex_table(
+                all_results,
+                caption="Cross-Dataset Evaluation Results",
+                label="tab:multi_dataset",
+                filename="multi_dataset_table.tex",
+            )
 
     return all_results
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate Multimodal Fake News Detector")
+    parser = argparse.ArgumentParser(description="Evaluate Multimodal Fake News Detector (Conference-Level)")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint")
     parser.add_argument("--config", type=str, default="config/config.yaml", help="Config file path")
     parser.add_argument("--dataset", type=str, default=None, help="Dataset to evaluate on")
@@ -291,6 +361,8 @@ def main():
     parser.add_argument("--ablation", action="store_true", help="Run full ablation study")
     parser.add_argument("--multi_dataset", nargs="+", default=None,
                         help="Evaluate across multiple datasets")
+    parser.add_argument("--bootstrap", action="store_true", help="Compute bootstrap CIs")
+    parser.add_argument("--latex", action="store_true", help="Generate LaTeX results tables")
     parser.add_argument("--device", type=str, default=None)
     args = parser.parse_args()
 
@@ -304,12 +376,17 @@ def main():
 
     if args.ablation:
         # Full ablation study
-        results = run_ablation_study(args.checkpoint, config, device)
+        results = run_ablation_study(
+            args.checkpoint, config, device,
+            compute_bootstrap=args.bootstrap,
+            generate_latex=args.latex,
+        )
 
     elif args.multi_dataset:
         # Multi-dataset evaluation
         results = run_multi_dataset_evaluation(
-            args.checkpoint, config, args.multi_dataset, device
+            args.checkpoint, config, args.multi_dataset, device,
+            generate_latex=args.latex,
         )
 
     else:
@@ -321,7 +398,17 @@ def main():
             data_dir=args.data_dir,
             mode=args.mode,
             device=device,
+            compute_bootstrap=args.bootstrap,
         )
+
+        # Generate LaTeX table for single evaluation
+        if args.latex:
+            metrics_calc = MetricsCalculator(save_dir="./results")
+            metrics_calc.generate_latex_table(
+                {args.mode: results},
+                caption=f"Evaluation Results ({args.mode})",
+                label="tab:eval_results",
+            )
 
     # Save results
     results_dir = Path("results")

@@ -1,32 +1,58 @@
+# ==============================================================================
+# Configuration for Multimodal Transformer Framework for Fake News Detection
+# Conference-Level Experimental Setup
+# ==============================================================================
+
 data:
   augment_images: true
-  data_dir: /content/fake_news_project/data/isot
+  data_dir: ./data/isot
   dataset_name: generic
   image_augmentation:
     color_jitter: true
     horizontal_flip: true
     normalize:
       mean:
-      - 0.485
-      - 0.456
-      - 0.406
+        - 0.485
+        - 0.456
+        - 0.406
       std:
-      - 0.229
-      - 0.224
-      - 0.225
+        - 0.229
+        - 0.224
+        - 0.225
     random_crop: true
   num_workers: 2
   pin_memory: true
+
 evaluation:
   average: weighted
   metrics:
-  - accuracy
-  - precision
-  - recall
-  - f1
-  - auc_roc
+    - accuracy
+    - precision
+    - recall
+    - f1
+    - auc_roc
+    - mcc
+    - cohens_kappa
   save_confusion_matrix: true
   save_roc_curve: true
+  # Statistical significance testing
+  statistical_tests:
+    enabled: true
+    mcnemar: true
+    bootstrap_ci: true
+    bootstrap_n_iterations: 1000
+    confidence_level: 0.95
+    paired_t_test: true
+
+# K-Fold Cross-Validation (conference standard)
+cross_validation:
+  enabled: true
+  n_folds: 5
+  stratified: true
+  # Number of independent runs for mean ± std reporting
+  n_runs: 3
+  report_mean_std: true
+
 explainability:
   grad_cam:
     enabled: true
@@ -36,24 +62,27 @@ explainability:
     enabled: true
     head_aggregation: mean
     layer_index: -1
+
 inference:
   confidence_threshold: 0.5
   host: 0.0.0.0
   max_batch_size: 32
   model_checkpoint: ./checkpoints/best_model.pt
   port: 5000
+
 logging:
   checkpoint_dir: ./checkpoints
   log_dir: ./logs
   log_every_n_steps: 50
   save_checkpoints: true
   tensorboard: true
+
 model:
   classifier:
     dropout: 0.3
     hidden_sizes:
-    - 256
-    - 128
+      - 256
+      - 128
     num_classes: 2
   fusion:
     dropout: 0.1
@@ -71,6 +100,7 @@ model:
     hidden_size: 768
     max_length: 256
     name: bert-base-uncased
+
 training:
   batch_size: 8
   early_stopping_patience: 5
@@ -84,3 +114,17 @@ training:
   val_split: 0.15
   warmup_ratio: 0.1
   weight_decay: 0.01
+  # Conference-level additions
+  label_smoothing: 0.1
+  focal_loss:
+    enabled: false
+    alpha: 0.25
+    gamma: 2.0
+
+# Publication-ready output settings
+publication:
+  latex_tables: true
+  results_dir: ./results
+  figures_dpi: 300
+  figure_format: pdf
+  font_family: serif

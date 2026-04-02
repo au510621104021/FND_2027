@@ -1,6 +1,6 @@
 ﻿"""
-Training Pipeline for Multimodal Fake News Detector
-=====================================================
+Training Pipeline for Multimodal Fake News Detector (Conference-Level)
+=========================================================================
 Handles the full training loop including:
     - Mixed-precision training (FP16)
     - Learning rate scheduling with warmup
@@ -9,13 +9,19 @@ Handles the full training loop including:
     - Checkpoint saving/loading
     - TensorBoard logging
     - Evaluation at each epoch
+    - Label smoothing for regularization
+    - Focal loss for class imbalance
+    - Environment snapshot for reproducibility
 """
 
 import os
+import sys
 import time
 import json
+import platform
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
@@ -29,6 +35,34 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, StepLR
 from torch.utils.tensorboard import SummaryWriter
 
 from .metrics import MetricsCalculator
+
+
+class FocalLoss(nn.Module):
+    """
+    Focal Loss for addressing class imbalance in fake news detection.
+
+    Reduces the loss contribution from easy-to-classify examples and focuses
+    training on hard misclassified samples.
+
+    Reference: Lin et al., "Focal Loss for Dense Object Detection", ICCV 2017.
+    """
+
+    def __init__(self, alpha: float = 0.25, gamma: float = 2.0, reduction: str = "mean"):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        ce_loss = F.cross_entropy(inputs, targets, reduction="none")
+        pt = torch.exp(-ce_loss)
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
+
+        if self.reduction == "mean":
+            return focal_loss.mean()
+        elif self.reduction == "sum":
+            return focal_loss.sum()
+        return focal_loss
 
 
 class EarlyStopping:
@@ -52,6 +86,41 @@ class EarlyStopping:
         return self.should_stop
 
 
+def capture_environment_snapshot(config: dict, save_dir: str = "./logs") -> dict:
+    """
+    Capture a full snapshot of the computational environment for reproducibility.
+    Essential for conference-level papers.
+
+    Returns:
+        dict with environment details
+    """
+    snapshot = {
+        "python_version": sys.version,
+        "platform": platform.platform(),
+        "pytorch_version": torch.__version__,
+        "cuda_available": torch.cuda.is_available(),
+        "cuda_version": torch.version.cuda if torch.cuda.is_available() else None,
+        "cudnn_version": str(torch.backends.cudnn.version()) if torch.cuda.is_available() else None,
+        "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+        "gpu_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+        "config": config,
+    }
+
+    try:
+        import transformers
+        snapshot["transformers_version"] = transformers.__version__
+    except ImportError:
+        pass
+
+    save_path = Path(save_dir) / "environment_snapshot.json"
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(save_path, "w") as f:
+        json.dump(snapshot, f, indent=2, default=str)
+
+    print(f"[ENV] Environment snapshot saved to {save_path}")
+    return snapshot
+
+
 class Trainer:
     """
     Full training pipeline for the MultimodalFakeNewsDetector.
@@ -62,6 +131,8 @@ class Trainer:
         - Cosine / Linear / Step LR schedulers with warmup
         - TensorBoard logging
         - Best model checkpointing
+        - Label smoothing for regularization
+        - Focal loss for class imbalance
     """
 
     def __init__(self, model, config: dict, device: torch.device = None):
@@ -73,8 +144,10 @@ class Trainer:
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
 
+        # --- Loss function selection ---
+        self.criterion = self._build_criterion()
+
         # Training components
-        self.criterion = nn.CrossEntropyLoss()
         self.optimizer = self._build_optimizer()
         self.scaler = GradScaler('cuda') if self.train_cfg.get("fp16", False) and torch.cuda.is_available() else None
 
@@ -105,6 +178,29 @@ class Trainer:
         self.training_history = []
         self.start_epoch = 0
         self.global_step = 0
+
+        # Capture environment for reproducibility
+        capture_environment_snapshot(
+            config,
+            save_dir=self.log_cfg.get("log_dir", "./logs"),
+        )
+
+    def _build_criterion(self) -> nn.Module:
+        """Build the loss function based on config."""
+        focal_cfg = self.train_cfg.get("focal_loss", {})
+        label_smoothing = self.train_cfg.get("label_smoothing", 0.0)
+
+        if focal_cfg.get("enabled", False):
+            print(f"[LOSS] Using Focal Loss (alpha={focal_cfg.get('alpha', 0.25)}, gamma={focal_cfg.get('gamma', 2.0)})")
+            return FocalLoss(
+                alpha=focal_cfg.get("alpha", 0.25),
+                gamma=focal_cfg.get("gamma", 2.0),
+            )
+        elif label_smoothing > 0:
+            print(f"[LOSS] Using CrossEntropyLoss with label_smoothing={label_smoothing}")
+            return nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+        else:
+            return nn.CrossEntropyLoss()
 
     def _build_optimizer(self) -> AdamW:
         """Build AdamW optimizer with weight decay."""
@@ -190,6 +286,7 @@ class Trainer:
         print(f"  Epochs: {num_epochs}")
         print(f"  Batch size: {self.train_cfg.get('batch_size', 16)}")
         print(f"  Learning rate: {self.train_cfg.get('learning_rate', 2e-5)}")
+        print(f"  Label smoothing: {self.train_cfg.get('label_smoothing', 0.0)}")
         params = self.model.get_trainable_params()
         print(f"  Trainable params: {params['trainable']:,} / {params['total']:,} ({params['trainable_pct']:.1f}%)")
         print(f"{'=' * 60}\n")
@@ -216,6 +313,8 @@ class Trainer:
                 "val_accuracy": val_metrics["accuracy"],
                 "train_f1": train_metrics["f1"],
                 "val_f1": val_metrics["f1"],
+                "val_mcc": val_metrics.get("mcc", 0),
+                "val_kappa": val_metrics.get("cohens_kappa", 0),
                 "lr": self.optimizer.param_groups[0]["lr"],
                 "epoch_time": epoch_time,
             }
@@ -226,7 +325,7 @@ class Trainer:
             # Print epoch summary
             print(f"\nEpoch {epoch + 1}/{num_epochs} ({epoch_time:.1f}s)")
             print(f"  Train Loss: {train_loss:.4f} | Acc: {train_metrics['accuracy']:.4f} | F1: {train_metrics['f1']:.4f}")
-            print(f"  Val   Loss: {val_loss:.4f} | Acc: {val_metrics['accuracy']:.4f} | F1: {val_metrics['f1']:.4f}")
+            print(f"  Val   Loss: {val_loss:.4f} | Acc: {val_metrics['accuracy']:.4f} | F1: {val_metrics['f1']:.4f} | MCC: {val_metrics.get('mcc', 0):.4f}")
 
             # TensorBoard logging
             if self.writer:
@@ -236,6 +335,8 @@ class Trainer:
                 self.writer.add_scalar("Accuracy/val", val_metrics["accuracy"], epoch)
                 self.writer.add_scalar("F1/train", train_metrics["f1"], epoch)
                 self.writer.add_scalar("F1/val", val_metrics["f1"], epoch)
+                self.writer.add_scalar("MCC/val", val_metrics.get("mcc", 0), epoch)
+                self.writer.add_scalar("Kappa/val", val_metrics.get("cohens_kappa", 0), epoch)
                 self.writer.add_scalar("LR", self.optimizer.param_groups[0]["lr"], epoch)
 
             # Checkpointing (always save latest, best when improved)
@@ -475,4 +576,3 @@ class Trainer:
             f"(Epoch {checkpoint.get('epoch', '?')}, Global Step {self.global_step})"
         )
         return checkpoint.get("metrics", {})
-

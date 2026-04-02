@@ -1,20 +1,46 @@
+# ==============================================================================
+# Multimodal Transformer Framework for Fake News Detection
+# Conference-Level Dependencies
+# ==============================================================================
+
+# --- Core Deep Learning ---
 torch>=2.0.0
 torchvision>=0.15.0
 transformers>=4.30.0
+
+# --- Data Processing ---
 Pillow>=9.5.0
 numpy>=1.24.0
 pandas>=2.0.0
+datasets>=2.12.0
+
+# --- Machine Learning & Evaluation ---
 scikit-learn>=1.2.0
+scipy>=1.10.0
+
+# --- Visualization & Plotting ---
 matplotlib>=3.7.0
 seaborn>=0.12.0
+plotly>=5.15.0
+
+# --- Configuration & Utilities ---
 pyyaml>=6.0
 tqdm>=4.65.0
+
+# --- Image Processing ---
+opencv-python>=4.7.0
+
+# --- Explainability ---
+grad-cam>=1.4.8
+
+# --- Logging & Monitoring ---
+tensorboard>=2.13.0
+
+# --- Web Application ---
 flask>=2.3.0
 flask-cors>=4.0.0
-opencv-python>=4.7.0
-grad-cam>=1.4.8
-tensorboard>=2.13.0
-datasets>=2.12.0
 streamlit>=1.28.0
 easyocr>=1.7.0
-plotly>=5.15.0
+
+# --- Publication & Reporting ---
+tabulate>=0.9.0
