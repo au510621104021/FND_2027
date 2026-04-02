@@ -29,6 +29,7 @@ sys.path.insert(0, str(project_root))
 from src.models import MultimodalFakeNewsDetector
 from src.data.dataset import get_dataloader
 from src.training.trainer import Trainer
+from src.utils.runtime import resolve_path, resolve_path_list
 
 
 def set_seed(seed: int):
@@ -65,11 +66,16 @@ def auto_configure_data_source(config: dict, project_root: Path) -> dict:
       2) Search under ./data for train/test or dataset CSV/TSV and switch to generic.
     """
     data_cfg = config["data"]
+    if data_cfg.get("data_dirs"):
+        resolved_dirs = resolve_path_list(data_cfg["data_dirs"], project_root)
+        config["data"]["data_dirs"] = resolved_dirs
+        config["data"]["data_dir"] = resolved_dirs[0]
+        print(f"[DATA] Using configured data_dirs ({len(resolved_dirs)}): {resolved_dirs}")
+        return config
+
     dataset_name = data_cfg.get("dataset_name", "generic")
     data_dir_cfg = data_cfg.get("data_dir", "./data")
-    data_dir = Path(data_dir_cfg)
-    if not data_dir.is_absolute():
-        data_dir = (project_root / data_dir).resolve()
+    data_dir = resolve_path(data_dir_cfg, project_root)
 
     # Common user mistake: passing "data\\X" while dataset is at project root "X".
     if not data_dir.exists():
@@ -126,6 +132,7 @@ def main():
     parser.add_argument("--config", type=str, default="config/config.yaml", help="Path to config file")
     parser.add_argument("--dataset", type=str, default=None, help="Override dataset name")
     parser.add_argument("--data_dir", type=str, default=None, help="Override data directory")
+    parser.add_argument("--data_dirs", type=str, nargs="+", default=None, help="Override multiple data directories")
     parser.add_argument("--mode", type=str, default="multimodal",
                         choices=["multimodal", "text_only", "image_only"],
                         help="Training mode (for ablation studies)")
@@ -148,6 +155,10 @@ def main():
         config["data"]["dataset_name"] = args.dataset
     if args.data_dir:
         config["data"]["data_dir"] = args.data_dir
+        config["data"].pop("data_dirs", None)
+    if args.data_dirs:
+        config["data"]["data_dirs"] = args.data_dirs
+        config["data"]["data_dir"] = args.data_dirs[0]
     if args.epochs:
         config["training"]["num_epochs"] = args.epochs
     if args.batch_size:
@@ -172,7 +183,7 @@ def main():
     print(f"{'#' * 60}")
     print(f"  Mode      : {args.mode}")
     print(f"  Dataset   : {config['data']['dataset_name']}")
-    print(f"  Data dir  : {config['data']['data_dir']}")
+    print(f"  Data dir  : {config['data'].get('data_dirs', config['data']['data_dir'])}")
     print(f"  Device    : {device}")
     print(f"  Epochs    : {config['training']['num_epochs']}")
     print(f"  Batch size: {config['training']['batch_size']}")
@@ -183,7 +194,7 @@ def main():
     # --- Create DataLoaders ---
     data_cfg = config["data"]
     dataloaders = get_dataloader(
-        data_dir=data_cfg["data_dir"],
+        data_dir=data_cfg.get("data_dirs", data_cfg["data_dir"]),
         dataset_name=data_cfg["dataset_name"],
         tokenizer_name=config["model"]["text_encoder"]["name"],
         max_length=config["model"]["text_encoder"]["max_length"],

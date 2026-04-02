@@ -32,6 +32,9 @@ def main():
     parser.add_argument("--checkpoint", type=str, default="checkpoints/best_model.pt",
                         help="Model checkpoint path")
     parser.add_argument("--explain", action="store_true", help="Generate explanations")
+    parser.add_argument("--mode", type=str, default="multimodal",
+                        choices=["multimodal", "text_only", "image_only"],
+                        help="Inference mode")
     parser.add_argument("--threshold", type=float, default=0.5, help="Classification threshold")
     parser.add_argument("--device", type=str, default=None, help="Device (cuda/cpu)")
     args = parser.parse_args()
@@ -66,6 +69,7 @@ def main():
         result = predictor.predict(
             text=args.text,
             image=args.image,
+            mode=args.mode,
             threshold=args.threshold,
         )
         print(f"\n{'=' * 50}")

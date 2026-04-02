@@ -1,11 +1,11 @@
 # ==============================================================================
-# Configuration for Multimodal Transformer Framework for Fake News Detection
-# Conference-Level Experimental Setup
+# Configuration for training on the Fake or Real News Dataset
+# Keeps checkpoints/logs separate from the ISOT-trained model.
 # ==============================================================================
 
 data:
   augment_images: true
-  data_dir: ./ISOT Fake News Dataset
+  data_dir: ./Fake or Real News Dataset
   dataset_name: generic
   image_augmentation:
     color_jitter: true
@@ -35,7 +35,6 @@ evaluation:
     - cohens_kappa
   save_confusion_matrix: true
   save_roc_curve: true
-  # Statistical significance testing
   statistical_tests:
     enabled: true
     mcnemar: true
@@ -44,12 +43,10 @@ evaluation:
     confidence_level: 0.95
     paired_t_test: true
 
-# K-Fold Cross-Validation (conference standard)
 cross_validation:
   enabled: true
   n_folds: 5
   stratified: true
-  # Number of independent runs for mean ± std reporting
   n_runs: 3
   report_mean_std: true
 
@@ -57,7 +54,7 @@ explainability:
   grad_cam:
     enabled: true
     target_layer: vit.encoder.layer.11
-  save_dir: ./explanations
+  save_dir: ./explanations/fake_or_real
   text_attention:
     enabled: true
     head_aggregation: mean
@@ -67,12 +64,12 @@ inference:
   confidence_threshold: 0.5
   host: 0.0.0.0
   max_batch_size: 32
-  model_checkpoint: ./checkpoints/best_model.pt
+  model_checkpoint: ./checkpoints/fake_or_real/best_model.pt
   port: 5000
 
 logging:
-  checkpoint_dir: ./checkpoints
-  log_dir: ./logs
+  checkpoint_dir: ./checkpoints/fake_or_real
+  log_dir: ./logs/fake_or_real
   log_every_n_steps: 50
   save_checkpoints: true
   tensorboard: true
@@ -114,17 +111,15 @@ training:
   val_split: 0.15
   warmup_ratio: 0.1
   weight_decay: 0.01
-  # Conference-level additions
   label_smoothing: 0.1
   focal_loss:
     enabled: false
     alpha: 0.25
     gamma: 2.0
 
-# Publication-ready output settings
 publication:
   latex_tables: true
-  results_dir: ./results
+  results_dir: ./results/fake_or_real
   figures_dpi: 300
   figure_format: pdf
   font_family: serif

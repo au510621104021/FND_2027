@@ -326,9 +326,9 @@ class GenericCSVAdapter(DatasetAdapter):
             return f"{primary}. {fallback}".strip(". ").strip()
         return primary
 
-    def load(self, data_dir: str) -> list:
-        samples = []
-        candidate_files = [
+    @staticmethod
+    def _candidate_files() -> list:
+        return [
             "dataset.csv",
             "data.csv",
             "train.csv",
@@ -341,6 +341,117 @@ class GenericCSVAdapter(DatasetAdapter):
             "test.tsv",
             "val.tsv",
         ]
+
+    @staticmethod
+    def _split_file_map() -> dict:
+        return {
+            "train": ["train.csv", "train.tsv"],
+            "val": ["val.csv", "val.tsv", "valid.csv", "validation.csv"],
+            "test": ["test.csv", "test.tsv"],
+            "all": ["dataset.csv", "dataset.tsv", "data.csv", "data.tsv"],
+        }
+
+    def _load_dataframe(self, filepath: str) -> pd.DataFrame:
+        sep = "\t" if filepath.lower().endswith(".tsv") else self.separator
+        df = pd.read_csv(filepath, sep=sep)
+
+        # Some datasets are semicolon-separated but saved as .csv.
+        if len(df.columns) == 1 and ";" in str(df.columns[0]) and sep == ",":
+            try:
+                df = pd.read_csv(filepath, sep=";")
+            except Exception:
+                pass
+        return df
+
+    def _parse_dataframe(self, df: pd.DataFrame, data_dir: str) -> list:
+        samples = []
+        text_col = self._pick_first_column(
+            list(df.columns),
+            ["text", "content", "statement", "headline", "title", "body"],
+        )
+        # Optional second text field to concatenate (common in news datasets)
+        secondary_text_col = self._pick_first_column(
+            list(df.columns),
+            ["text", "content", "body", "article"],
+        )
+        if secondary_text_col == text_col:
+            secondary_text_col = None
+
+        image_col = self._pick_first_column(
+            list(df.columns),
+            ["image_path", "image", "img_path", "img", "image_url"],
+        )
+        label_col = self._pick_first_column(
+            list(df.columns),
+            ["label", "target", "class", "fake", "category", "verdict", "truth"],
+        )
+
+        if not text_col or not label_col:
+            return samples
+
+        for _, row in df.iterrows():
+            text = self._compose_text(row, text_col, secondary_text_col)
+            if not text or text.lower() == "nan":
+                continue
+
+            try:
+                label = _normalize_binary_label(row[label_col])
+            except Exception:
+                continue
+
+            image_path = None
+            if image_col and pd.notna(row.get(image_col)):
+                img = str(row[image_col])
+                if os.path.isabs(img):
+                    image_path = img
+                else:
+                    image_path = os.path.join(data_dir, img)
+                if not os.path.exists(image_path):
+                    image_path = None
+
+            samples.append({
+                "text": text,
+                "image_path": image_path,
+                "label": label,
+            })
+
+        return samples
+
+    def _load_file(self, filepath: str, data_dir: str) -> list:
+        df = self._load_dataframe(filepath)
+        return self._parse_dataframe(df, data_dir)
+
+    def load_splits(self, data_dir: str) -> dict:
+        split_map = {key: [] for key in self._split_file_map()}
+        data_root = Path(data_dir)
+        found_paths = {}
+
+        if not data_root.exists():
+            return split_map
+
+        for split_name, filenames in self._split_file_map().items():
+            for filename in filenames:
+                direct_path = data_root / filename
+                if direct_path.exists():
+                    found_paths[split_name] = str(direct_path)
+                    break
+            if split_name in found_paths:
+                continue
+            for candidate in data_root.rglob("*"):
+                if candidate.is_file() and candidate.name.lower() in filenames:
+                    found_paths[split_name] = str(candidate)
+                    break
+
+        for split_name, filepath in found_paths.items():
+            loaded = self._load_file(filepath, data_dir)
+            split_map[split_name].extend(loaded)
+            print(f"[GenericCSV] Loaded {len(loaded)} {split_name} samples from {os.path.basename(filepath)}")
+
+        return split_map
+
+    def load(self, data_dir: str) -> list:
+        samples = []
+        candidate_files = self._candidate_files()
 
         found_files = []
         for filename in candidate_files:
@@ -367,70 +478,12 @@ class GenericCSVAdapter(DatasetAdapter):
             return samples
 
         for filepath in found_files:
-            sep = "\t" if filepath.lower().endswith(".tsv") else self.separator
-            df = pd.read_csv(filepath, sep=sep)
-
-            # Some datasets are semicolon-separated but saved as .csv.
-            if len(df.columns) == 1 and ";" in str(df.columns[0]) and sep == ",":
-                try:
-                    df = pd.read_csv(filepath, sep=";")
-                except Exception:
-                    pass
-
-            text_col = self._pick_first_column(
-                list(df.columns),
-                ["text", "content", "statement", "headline", "title", "body"],
-            )
-            # Optional second text field to concatenate (common in news datasets)
-            secondary_text_col = self._pick_first_column(
-                list(df.columns),
-                ["text", "content", "body", "article"],
-            )
-            if secondary_text_col == text_col:
-                secondary_text_col = None
-
-            image_col = self._pick_first_column(
-                list(df.columns),
-                ["image_path", "image", "img_path", "img", "image_url"],
-            )
-            label_col = self._pick_first_column(
-                list(df.columns),
-                ["label", "target", "class", "fake", "category", "verdict", "truth"],
-            )
-
-            if not text_col or not label_col:
+            loaded = self._load_file(filepath, data_dir)
+            if not loaded:
                 print(f"[GenericCSV] Skipping {os.path.basename(filepath)}: missing text/label columns")
                 continue
-
-            loaded_before = len(samples)
-            for _, row in df.iterrows():
-                text = self._compose_text(row, text_col, secondary_text_col)
-                if not text or text.lower() == "nan":
-                    continue
-
-                try:
-                    label = _normalize_binary_label(row[label_col])
-                except Exception:
-                    continue
-
-                image_path = None
-                if image_col and pd.notna(row.get(image_col)):
-                    img = str(row[image_col])
-                    if os.path.isabs(img):
-                        image_path = img
-                    else:
-                        image_path = os.path.join(data_dir, img)
-                    if not os.path.exists(image_path):
-                        image_path = None
-
-                samples.append({
-                    "text": text,
-                    "image_path": image_path,
-                    "label": label,
-                })
-
-            loaded_now = len(samples) - loaded_before
-            print(f"[GenericCSV] Loaded {loaded_now} samples from {os.path.basename(filepath)}")
+            samples.extend(loaded)
+            print(f"[GenericCSV] Loaded {len(loaded)} samples from {os.path.basename(filepath)}")
 
         print(f"[GenericCSV] Total loaded samples: {len(samples)}")
 
@@ -459,6 +512,40 @@ def get_adapter(dataset_name: str) -> DatasetAdapter:
         return GenericCSVAdapter()
     adapter = DATASET_ADAPTERS[dataset_name]
     return adapter() if callable(adapter) else adapter
+
+
+def _ensure_data_dirs(data_dir) -> list[str]:
+    if isinstance(data_dir, (list, tuple)):
+        return [str(d) for d in data_dir]
+    return [str(data_dir)]
+
+
+def load_dataset_splits(data_dir, dataset_name: str = "generic") -> dict:
+    """
+    Load dataset samples while preserving official split files when available.
+
+    Returns:
+        dict with keys: train, val, test, all
+    """
+    data_dirs = _ensure_data_dirs(data_dir)
+    aggregated = {"train": [], "val": [], "test": [], "all": []}
+
+    for directory in data_dirs:
+        adapter = get_adapter(dataset_name)
+
+        if dataset_name == "generic" and isinstance(adapter, GenericCSVAdapter):
+            split_samples = adapter.load_splits(directory)
+            has_official_split = bool(split_samples["train"] or split_samples["test"] or split_samples["val"])
+
+            if has_official_split:
+                for key in aggregated:
+                    aggregated[key].extend(split_samples.get(key, []))
+            else:
+                aggregated["all"].extend(adapter.load(directory))
+        else:
+            aggregated["all"].extend(adapter.load(directory))
+
+    return aggregated
 
 
 # =============================================================================
@@ -553,7 +640,7 @@ class MultimodalFakeNewsDataset(Dataset):
 # =============================================================================
 
 def get_dataloader(
-    data_dir: str,
+    data_dir,
     dataset_name: str = "generic",
     tokenizer_name: str = "bert-base-uncased",
     max_length: int = 256,
@@ -571,32 +658,159 @@ def get_dataloader(
     Returns:
         dict with 'train', 'val', 'test' DataLoader objects and 'dataset_size' info.
     """
-    # Load full dataset
-    full_dataset = MultimodalFakeNewsDataset(
-        data_dir=data_dir,
-        dataset_name=dataset_name,
-        tokenizer_name=tokenizer_name,
-        max_length=max_length,
-        image_size=image_size,
-        train=True,
-    )
+    data_dirs = _ensure_data_dirs(data_dir)
+    base_data_dir = data_dirs[0]
+    split_samples = load_dataset_splits(data_dir, dataset_name=dataset_name)
 
-    total = len(full_dataset)
-    if total == 0:
+    has_official_split = bool(split_samples["train"] or split_samples["test"] or split_samples["val"])
+
+    if has_official_split:
+        train_samples = split_samples["train"]
+        val_samples = split_samples["val"]
+        test_samples = split_samples["test"]
+
+        if not train_samples and split_samples["all"]:
+            train_samples = split_samples["all"]
+
+        if not val_samples and train_samples:
+            val_size = int(len(train_samples) * val_split)
+            val_size = max(val_size, 1) if len(train_samples) > 1 and val_split > 0 else 0
+            if val_size > 0:
+                generator = torch.Generator().manual_seed(seed)
+                train_pool = list(train_samples)
+                train_subset, val_subset = random_split(
+                    train_pool,
+                    [len(train_samples) - val_size, val_size],
+                    generator=generator,
+                )
+                train_samples = [train_pool[i] for i in train_subset.indices]
+                val_samples = [train_pool[i] for i in val_subset.indices]
+
+        if not test_samples:
+            if split_samples["all"]:
+                full_dataset = MultimodalFakeNewsDataset(
+                    data_dir=base_data_dir,
+                    dataset_name=dataset_name,
+                    tokenizer_name=tokenizer_name,
+                    max_length=max_length,
+                    image_size=image_size,
+                    train=True,
+                    samples=split_samples["all"],
+                )
+                total = len(full_dataset)
+                test_size = int(total * test_split)
+                val_size = int(total * val_split)
+                train_size = total - val_size - test_size
+                generator = torch.Generator().manual_seed(seed)
+                train_dataset, val_dataset, test_dataset = random_split(
+                    full_dataset, [train_size, val_size, test_size], generator=generator
+                )
+            else:
+                pool = list(train_samples)
+                total = len(pool)
+                test_size = int(total * test_split)
+                test_size = max(test_size, 1) if total > 2 and test_split > 0 else 0
+                train_size = total - val_size - test_size
+                if train_size <= 0:
+                    raise ValueError("Not enough training samples to create train/val/test splits.")
+                generator = torch.Generator().manual_seed(seed)
+                train_subset, val_subset, test_subset = random_split(
+                    pool, [train_size, val_size, test_size], generator=generator
+                )
+                train_samples = [pool[i] for i in train_subset.indices]
+                val_samples = [pool[i] for i in val_subset.indices]
+                test_samples = [pool[i] for i in test_subset.indices]
+                train_dataset = MultimodalFakeNewsDataset(
+                    data_dir=base_data_dir,
+                    dataset_name=dataset_name,
+                    tokenizer_name=tokenizer_name,
+                    max_length=max_length,
+                    image_size=image_size,
+                    train=True,
+                    samples=train_samples,
+                )
+                val_dataset = MultimodalFakeNewsDataset(
+                    data_dir=base_data_dir,
+                    dataset_name=dataset_name,
+                    tokenizer_name=tokenizer_name,
+                    max_length=max_length,
+                    image_size=image_size,
+                    train=False,
+                    samples=val_samples,
+                )
+                test_dataset = MultimodalFakeNewsDataset(
+                    data_dir=base_data_dir,
+                    dataset_name=dataset_name,
+                    tokenizer_name=tokenizer_name,
+                    max_length=max_length,
+                    image_size=image_size,
+                    train=False,
+                    samples=test_samples,
+                )
+        else:
+            train_dataset = MultimodalFakeNewsDataset(
+                data_dir=base_data_dir,
+                dataset_name=dataset_name,
+                tokenizer_name=tokenizer_name,
+                max_length=max_length,
+                image_size=image_size,
+                train=True,
+                samples=train_samples,
+            )
+            val_dataset = MultimodalFakeNewsDataset(
+                data_dir=base_data_dir,
+                dataset_name=dataset_name,
+                tokenizer_name=tokenizer_name,
+                max_length=max_length,
+                image_size=image_size,
+                train=False,
+                samples=val_samples,
+            )
+            test_dataset = MultimodalFakeNewsDataset(
+                data_dir=base_data_dir,
+                dataset_name=dataset_name,
+                tokenizer_name=tokenizer_name,
+                max_length=max_length,
+                image_size=image_size,
+                train=False,
+                samples=test_samples,
+            )
+            total = len(train_samples) + len(val_samples) + len(test_samples)
+            train_size = len(train_samples)
+            val_size = len(val_samples)
+            test_size = len(test_samples)
+    else:
+        full_dataset = MultimodalFakeNewsDataset(
+            data_dir=base_data_dir,
+            dataset_name=dataset_name,
+            tokenizer_name=tokenizer_name,
+            max_length=max_length,
+            image_size=image_size,
+            train=True,
+        )
+
+        total = len(full_dataset)
+        if total == 0:
+            raise ValueError(
+                f"No samples found for dataset_name='{dataset_name}' in data_dir='{data_dir}'. "
+                "For generic datasets, place train/test/dataset CSV files with text and label columns."
+            )
+
+        test_size = int(total * test_split)
+        val_size = int(total * val_split)
+        train_size = total - val_size - test_size
+
+        # Deterministic split
+        generator = torch.Generator().manual_seed(seed)
+        train_dataset, val_dataset, test_dataset = random_split(
+            full_dataset, [train_size, val_size, test_size], generator=generator
+        )
+
+    if train_size + val_size + test_size == 0:
         raise ValueError(
             f"No samples found for dataset_name='{dataset_name}' in data_dir='{data_dir}'. "
             "For generic datasets, place train/test/dataset CSV files with text and label columns."
         )
-
-    test_size = int(total * test_split)
-    val_size = int(total * val_split)
-    train_size = total - val_size - test_size
-
-    # Deterministic split
-    generator = torch.Generator().manual_seed(seed)
-    train_dataset, val_dataset, test_dataset = random_split(
-        full_dataset, [train_size, val_size, test_size], generator=generator
-    )
 
     # DataLoaders
     train_loader = DataLoader(

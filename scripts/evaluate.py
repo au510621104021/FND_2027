@@ -43,6 +43,7 @@ from src.models import MultimodalFakeNewsDetector
 from src.data.dataset import get_dataloader
 from src.training.trainer import Trainer
 from src.training.metrics import MetricsCalculator, compare_models
+from src.utils.runtime import resolve_path, resolve_path_list
 
 
 def _contains_any(directory: Path, names: list[str]) -> bool:
@@ -63,11 +64,16 @@ def _looks_like_generic_dataset_dir(directory: Path) -> bool:
 
 def auto_configure_data_source(config: dict, project_root: Path) -> dict:
     data_cfg = config["data"]
+    if data_cfg.get("data_dirs"):
+        resolved_dirs = resolve_path_list(data_cfg["data_dirs"], project_root)
+        config["data"]["data_dirs"] = resolved_dirs
+        config["data"]["data_dir"] = resolved_dirs[0]
+        print(f"[DATA] Using configured data_dirs ({len(resolved_dirs)}): {resolved_dirs}")
+        return config
+
     dataset_name = data_cfg.get("dataset_name", "generic")
     data_dir_cfg = data_cfg.get("data_dir", "./data")
-    data_dir = Path(data_dir_cfg)
-    if not data_dir.is_absolute():
-        data_dir = (project_root / data_dir).resolve()
+    data_dir = resolve_path(data_dir_cfg, project_root)
 
     if not data_dir.exists():
         alt_from_name = (project_root / Path(data_dir_cfg).name).resolve()
@@ -141,10 +147,11 @@ def evaluate_model(
         config["data"]["dataset_name"] = dataset_name
     if data_dir:
         config["data"]["data_dir"] = data_dir
+        config["data"].pop("data_dirs", None)
 
     # Load data
     dataloaders = get_dataloader(
-        data_dir=config["data"]["data_dir"],
+        data_dir=config["data"].get("data_dirs", config["data"]["data_dir"]),
         dataset_name=config["data"]["dataset_name"],
         tokenizer_name=config["model"]["text_encoder"]["name"],
         max_length=config["model"]["text_encoder"]["max_length"],
@@ -356,6 +363,7 @@ def main():
     parser.add_argument("--config", type=str, default="config/config.yaml", help="Config file path")
     parser.add_argument("--dataset", type=str, default=None, help="Dataset to evaluate on")
     parser.add_argument("--data_dir", type=str, default=None, help="Data directory")
+    parser.add_argument("--data_dirs", type=str, nargs="+", default=None, help="Multiple data directories")
     parser.add_argument("--mode", type=str, default="multimodal",
                         choices=["multimodal", "text_only", "image_only"])
     parser.add_argument("--ablation", action="store_true", help="Run full ablation study")
@@ -370,6 +378,12 @@ def main():
     config_path = os.path.join(project_root, args.config) if not os.path.isabs(args.config) else args.config
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
+    if args.data_dir:
+        config["data"]["data_dir"] = args.data_dir
+        config["data"].pop("data_dirs", None)
+    if args.data_dirs:
+        config["data"]["data_dirs"] = args.data_dirs
+        config["data"]["data_dir"] = args.data_dirs[0]
     config = auto_configure_data_source(config, project_root)
 
     device = torch.device(args.device) if args.device else torch.device("cuda" if torch.cuda.is_available() else "cpu")

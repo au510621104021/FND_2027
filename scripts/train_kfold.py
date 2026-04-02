@@ -38,7 +38,7 @@ from sklearn.model_selection import StratifiedKFold
 from torch.utils.data import DataLoader, Subset
 
 from src.models import MultimodalFakeNewsDetector
-from src.data.dataset import MultimodalFakeNewsDataset, get_adapter, _collate_fn
+from src.data.dataset import MultimodalFakeNewsDataset, load_dataset_splits, _collate_fn
 from src.training.trainer import Trainer
 from src.training.metrics import (
     MetricsCalculator,
@@ -163,12 +163,15 @@ def run_kfold_cv(
     print(f"  Device     : {device}")
     print(f"{'#' * 60}\n")
 
-    # Load the full dataset once
-    adapter = get_adapter(data_cfg["dataset_name"])
-    samples = adapter.load(data_cfg["data_dir"])
+    # Build the CV pool from official training data when available.
+    data_source = data_cfg.get("data_dirs", data_cfg["data_dir"])
+    split_samples = load_dataset_splits(data_source, data_cfg["dataset_name"])
+    samples = split_samples["train"] + split_samples["val"]
+    if not samples:
+        samples = split_samples["all"]
 
     if len(samples) == 0:
-        raise ValueError(f"No samples found for dataset '{data_cfg['dataset_name']}' in '{data_cfg['data_dir']}'")
+        raise ValueError(f"No samples found for dataset '{data_cfg['dataset_name']}' in '{data_source}'")
 
     labels = np.array([s["label"] for s in samples])
 
@@ -194,7 +197,7 @@ def run_kfold_cv(
             val_samples = [samples[i] for i in val_indices]
 
             train_dataset = MultimodalFakeNewsDataset(
-                data_dir=data_cfg["data_dir"],
+                data_dir=data_cfg.get("data_dir", data_source[0] if isinstance(data_source, list) else data_source),
                 dataset_name=data_cfg["dataset_name"],
                 tokenizer_name=config["model"]["text_encoder"]["name"],
                 max_length=config["model"]["text_encoder"]["max_length"],
@@ -204,7 +207,7 @@ def run_kfold_cv(
             )
 
             val_dataset = MultimodalFakeNewsDataset(
-                data_dir=data_cfg["data_dir"],
+                data_dir=data_cfg.get("data_dir", data_source[0] if isinstance(data_source, list) else data_source),
                 dataset_name=data_cfg["dataset_name"],
                 tokenizer_name=config["model"]["text_encoder"]["name"],
                 max_length=config["model"]["text_encoder"]["max_length"],
@@ -372,6 +375,7 @@ def main():
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--dataset", type=str, default=None, help="Override dataset name")
     parser.add_argument("--data_dir", type=str, default=None, help="Override data directory")
+    parser.add_argument("--data_dirs", type=str, nargs="+", default=None, help="Override multiple data directories")
     args = parser.parse_args()
 
     # Load config
@@ -384,6 +388,10 @@ def main():
         config["data"]["dataset_name"] = args.dataset
     if args.data_dir:
         config["data"]["data_dir"] = args.data_dir
+        config["data"].pop("data_dirs", None)
+    if args.data_dirs:
+        config["data"]["data_dirs"] = args.data_dirs
+        config["data"]["data_dir"] = args.data_dirs[0]
 
     cv_cfg = config.get("cross_validation", {})
     n_folds = args.n_folds or cv_cfg.get("n_folds", 5)
