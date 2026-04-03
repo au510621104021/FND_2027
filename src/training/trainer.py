@@ -554,6 +554,11 @@ class Trainer:
         path = self.checkpoint_dir / "latest_model.pt"
         torch.save(checkpoint, path)
 
+        # Save per-epoch checkpoint so long runs are auditable and resumable.
+        epoch_path = self.checkpoint_dir / f"epoch_{epoch}.pt"
+        torch.save(checkpoint, epoch_path)
+        print(f"  [CHECKPOINT] Epoch checkpoint saved to {epoch_path}")
+
         if is_best:
             best_path = self.checkpoint_dir / "best_model.pt"
             torch.save(checkpoint, best_path)

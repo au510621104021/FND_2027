@@ -1,4 +1,4 @@
-"""Helpers for resolving paths across local environments and Google Colab."""
+"""Helpers for resolving paths across local, Colab, and Kaggle environments."""
 
 from __future__ import annotations
 
@@ -11,6 +11,10 @@ def is_colab() -> bool:
     return "google.colab" in sys.modules or "COLAB_RELEASE_TAG" in os.environ
 
 
+def is_kaggle() -> bool:
+    return "KAGGLE_KERNEL_RUN_TYPE" in os.environ or Path("/kaggle/input").exists()
+
+
 def candidate_roots(project_root: Path) -> list[Path]:
     roots = [project_root.resolve(), Path.cwd().resolve()]
 
@@ -19,6 +23,12 @@ def candidate_roots(project_root: Path) -> list[Path]:
             Path("/content"),
             Path("/content/drive/MyDrive"),
             Path("/content/drive/Shareddrives"),
+        ])
+    if is_kaggle():
+        roots.extend([
+            Path("/kaggle/input"),
+            Path("/kaggle/working"),
+            Path("/kaggle/temp"),
         ])
 
     # Preserve order while dropping duplicates.
