@@ -82,7 +82,7 @@ class MultimodalPredictor:
             Initialized MultimodalPredictor
         """
         device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        checkpoint = torch.load(checkpoint_path, map_location=device)
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
         config = checkpoint["config"]
         model = MultimodalFakeNewsDetector(config)

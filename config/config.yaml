@@ -7,6 +7,12 @@ data:
   augment_images: true
   data_dir: ./ISOT Fake News Dataset
   dataset_name: generic
+  data_dirs:
+  - ./ISOT Fake News Dataset
+  - ./Fake News Dataset
+  dataset_names:
+  - generic
+  - generic
   image_augmentation:
     color_jitter: true
     horizontal_flip: true

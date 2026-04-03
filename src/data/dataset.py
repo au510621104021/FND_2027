@@ -503,8 +503,6 @@ DATASET_ADAPTERS = {
     "isot": ISOTAdapter,
     "generic": GenericCSVAdapter,
 }
-
-
 def get_adapter(dataset_name: str) -> DatasetAdapter:
     """Get the appropriate dataset adapter."""
     if dataset_name not in DATASET_ADAPTERS:
@@ -514,38 +512,89 @@ def get_adapter(dataset_name: str) -> DatasetAdapter:
     return adapter() if callable(adapter) else adapter
 
 
-def _ensure_data_dirs(data_dir) -> list[str]:
-    if isinstance(data_dir, (list, tuple)):
-        return [str(d) for d in data_dir]
-    return [str(data_dir)]
+def _ensure_list(value, default=None) -> list:
+    """Normalize a scalar or sequence config value into a list."""
+    if value is None:
+        return [] if default is None else [default]
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
 
 
-def load_dataset_splits(data_dir, dataset_name: str = "generic") -> dict:
+def _normalize_data_sources(data_dir, dataset_name) -> list[tuple[str, str]]:
     """
-    Load dataset samples while preserving official split files when available.
+    Build a normalized list of (data_dir, dataset_name) pairs.
+
+    Supports:
+        - single data_dir + single dataset_name
+        - multiple data_dirs + one dataset_name (dataset_name repeated)
+        - multiple data_dirs + matching dataset_names
+    """
+    data_dirs = _ensure_list(data_dir)
+    dataset_names = _ensure_list(dataset_name or "generic", default="generic")
+
+    if not data_dirs:
+        raise ValueError("At least one data directory must be provided.")
+
+    if len(dataset_names) == 1 and len(data_dirs) > 1:
+        dataset_names = dataset_names * len(data_dirs)
+    elif len(data_dirs) == 1 and len(dataset_names) > 1:
+        data_dirs = data_dirs * len(dataset_names)
+
+    if len(data_dirs) != len(dataset_names):
+        raise ValueError(
+            "Number of data directories must match number of dataset names, "
+            "or provide a single dataset name to reuse across all directories."
+        )
+
+    return [(str(curr_dir), str(curr_name)) for curr_dir, curr_name in zip(data_dirs, dataset_names)]
+
+
+def load_dataset_splits(data_dir, dataset_name="generic") -> tuple[dict, list]:
+    """
+    Load samples from one or more sources while preserving official split files
+    when available.
 
     Returns:
-        dict with keys: train, val, test, all
+        split_samples: dict with train/val/test/all sample lists
+        source_stats: list of dicts with per-source counts
     """
-    data_dirs = _ensure_data_dirs(data_dir)
-    aggregated = {"train": [], "val": [], "test": [], "all": []}
+    split_samples = {"train": [], "val": [], "test": [], "all": []}
+    source_stats = []
 
-    for directory in data_dirs:
-        adapter = get_adapter(dataset_name)
+    for current_dir, current_name in _normalize_data_sources(data_dir, dataset_name):
+        adapter = get_adapter(current_name)
 
-        if dataset_name == "generic" and isinstance(adapter, GenericCSVAdapter):
-            split_samples = adapter.load_splits(directory)
-            has_official_split = bool(split_samples["train"] or split_samples["test"] or split_samples["val"])
+        if current_name == "generic" and isinstance(adapter, GenericCSVAdapter):
+            current_split_samples = adapter.load_splits(current_dir)
+            has_official_split = bool(
+                current_split_samples["train"] or current_split_samples["val"] or current_split_samples["test"]
+            )
 
             if has_official_split:
-                for key in aggregated:
-                    aggregated[key].extend(split_samples.get(key, []))
+                for split_name in split_samples:
+                    split_samples[split_name].extend(current_split_samples.get(split_name, []))
+                num_samples = (
+                    len(current_split_samples["all"])
+                    if current_split_samples["all"]
+                    else len(current_split_samples["train"]) + len(current_split_samples["val"]) + len(current_split_samples["test"])
+                )
             else:
-                aggregated["all"].extend(adapter.load(directory))
+                loaded_samples = adapter.load(current_dir)
+                split_samples["all"].extend(loaded_samples)
+                num_samples = len(loaded_samples)
         else:
-            aggregated["all"].extend(adapter.load(directory))
+            loaded_samples = adapter.load(current_dir)
+            split_samples["all"].extend(loaded_samples)
+            num_samples = len(loaded_samples)
 
-    return aggregated
+        source_stats.append({
+            "dataset_name": current_name,
+            "data_dir": current_dir,
+            "num_samples": num_samples,
+        })
+
+    return split_samples, source_stats
 
 
 # =============================================================================
@@ -658,137 +707,91 @@ def get_dataloader(
     Returns:
         dict with 'train', 'val', 'test' DataLoader objects and 'dataset_size' info.
     """
-    data_dirs = _ensure_data_dirs(data_dir)
-    base_data_dir = data_dirs[0]
-    split_samples = load_dataset_splits(data_dir, dataset_name=dataset_name)
+    data_dirs = _ensure_list(data_dir)
+    base_data_dir = str(data_dirs[0])
+    primary_dataset_name = str(_ensure_list(dataset_name or "generic", default="generic")[0])
+    split_samples, source_stats = load_dataset_splits(data_dir, dataset_name=dataset_name)
 
-    has_official_split = bool(split_samples["train"] or split_samples["test"] or split_samples["val"])
+    has_official_split = bool(split_samples["train"] or split_samples["val"] or split_samples["test"])
 
-    if has_official_split:
-        train_samples = split_samples["train"]
-        val_samples = split_samples["val"]
-        test_samples = split_samples["test"]
-
-        if not train_samples and split_samples["all"]:
-            train_samples = split_samples["all"]
-
-        if not val_samples and train_samples:
-            val_size = int(len(train_samples) * val_split)
-            val_size = max(val_size, 1) if len(train_samples) > 1 and val_split > 0 else 0
-            if val_size > 0:
-                generator = torch.Generator().manual_seed(seed)
-                train_pool = list(train_samples)
-                train_subset, val_subset = random_split(
-                    train_pool,
-                    [len(train_samples) - val_size, val_size],
-                    generator=generator,
-                )
-                train_samples = [train_pool[i] for i in train_subset.indices]
-                val_samples = [train_pool[i] for i in val_subset.indices]
-
-        if not test_samples:
-            if split_samples["all"]:
-                full_dataset = MultimodalFakeNewsDataset(
-                    data_dir=base_data_dir,
-                    dataset_name=dataset_name,
-                    tokenizer_name=tokenizer_name,
-                    max_length=max_length,
-                    image_size=image_size,
-                    train=True,
-                    samples=split_samples["all"],
-                )
-                total = len(full_dataset)
-                test_size = int(total * test_split)
-                val_size = int(total * val_split)
-                train_size = total - val_size - test_size
-                generator = torch.Generator().manual_seed(seed)
-                train_dataset, val_dataset, test_dataset = random_split(
-                    full_dataset, [train_size, val_size, test_size], generator=generator
-                )
-            else:
-                pool = list(train_samples)
-                total = len(pool)
-                test_size = int(total * test_split)
-                test_size = max(test_size, 1) if total > 2 and test_split > 0 else 0
-                train_size = total - val_size - test_size
-                if train_size <= 0:
-                    raise ValueError("Not enough training samples to create train/val/test splits.")
-                generator = torch.Generator().manual_seed(seed)
-                train_subset, val_subset, test_subset = random_split(
-                    pool, [train_size, val_size, test_size], generator=generator
-                )
-                train_samples = [pool[i] for i in train_subset.indices]
-                val_samples = [pool[i] for i in val_subset.indices]
-                test_samples = [pool[i] for i in test_subset.indices]
-                train_dataset = MultimodalFakeNewsDataset(
-                    data_dir=base_data_dir,
-                    dataset_name=dataset_name,
-                    tokenizer_name=tokenizer_name,
-                    max_length=max_length,
-                    image_size=image_size,
-                    train=True,
-                    samples=train_samples,
-                )
-                val_dataset = MultimodalFakeNewsDataset(
-                    data_dir=base_data_dir,
-                    dataset_name=dataset_name,
-                    tokenizer_name=tokenizer_name,
-                    max_length=max_length,
-                    image_size=image_size,
-                    train=False,
-                    samples=val_samples,
-                )
-                test_dataset = MultimodalFakeNewsDataset(
-                    data_dir=base_data_dir,
-                    dataset_name=dataset_name,
-                    tokenizer_name=tokenizer_name,
-                    max_length=max_length,
-                    image_size=image_size,
-                    train=False,
-                    samples=test_samples,
-                )
-        else:
-            train_dataset = MultimodalFakeNewsDataset(
-                data_dir=base_data_dir,
-                dataset_name=dataset_name,
-                tokenizer_name=tokenizer_name,
-                max_length=max_length,
-                image_size=image_size,
-                train=True,
-                samples=train_samples,
-            )
-            val_dataset = MultimodalFakeNewsDataset(
-                data_dir=base_data_dir,
-                dataset_name=dataset_name,
-                tokenizer_name=tokenizer_name,
-                max_length=max_length,
-                image_size=image_size,
-                train=False,
-                samples=val_samples,
-            )
-            test_dataset = MultimodalFakeNewsDataset(
-                data_dir=base_data_dir,
-                dataset_name=dataset_name,
-                tokenizer_name=tokenizer_name,
-                max_length=max_length,
-                image_size=image_size,
-                train=False,
-                samples=test_samples,
-            )
-            total = len(train_samples) + len(val_samples) + len(test_samples)
-            train_size = len(train_samples)
-            val_size = len(val_samples)
-            test_size = len(test_samples)
-    else:
-        full_dataset = MultimodalFakeNewsDataset(
+    def _build_dataset(samples: list, train_flag: bool):
+        return MultimodalFakeNewsDataset(
             data_dir=base_data_dir,
-            dataset_name=dataset_name,
+            dataset_name=primary_dataset_name,
             tokenizer_name=tokenizer_name,
             max_length=max_length,
             image_size=image_size,
-            train=True,
+            train=train_flag,
+            samples=samples,
         )
 
+    if has_official_split:
+        train_samples = list(split_samples["train"])
+        val_samples = list(split_samples["val"])
+        test_samples = list(split_samples["test"])
+
+        if len(source_stats) > 1:
+            print(f"\n{'='*50}")
+            print("Combined Dataset Sources")
+            print(f"{'='*50}")
+            for idx, source in enumerate(source_stats, start=1):
+                print(
+                    f"  {idx}. {source['dataset_name']} | "
+                    f"{source['num_samples']} samples | {source['data_dir']}"
+                )
+            print(f"{'='*50}\n")
+
+        if not train_samples and split_samples["all"]:
+            train_samples = list(split_samples["all"])
+
+        if not val_samples and len(train_samples) > 1 and val_split > 0:
+            derived_val_size = int(len(train_samples) * val_split)
+            derived_val_size = max(derived_val_size, 1)
+            if len(train_samples) - derived_val_size < 1:
+                derived_val_size = max(len(train_samples) - 1, 0)
+            if derived_val_size > 0:
+                pool_samples = list(train_samples)
+                generator = torch.Generator().manual_seed(seed)
+                train_subset, val_subset = random_split(
+                    pool_samples,
+                    [len(pool_samples) - derived_val_size, derived_val_size],
+                    generator=generator,
+                )
+                train_samples = [pool_samples[i] for i in train_subset.indices]
+                val_samples = [pool_samples[i] for i in val_subset.indices]
+
+        if not test_samples and len(train_samples) > 2 and test_split > 0:
+            derived_test_size = int(len(train_samples) * test_split)
+            derived_test_size = max(derived_test_size, 1)
+            if len(train_samples) - derived_test_size < 1:
+                derived_test_size = max(len(train_samples) - 1, 0)
+            if derived_test_size > 0:
+                pool_samples = list(train_samples)
+                generator = torch.Generator().manual_seed(seed)
+                reduced_train_subset, test_subset = random_split(
+                    pool_samples,
+                    [len(pool_samples) - derived_test_size, derived_test_size],
+                    generator=generator,
+                )
+                train_samples = [pool_samples[i] for i in reduced_train_subset.indices]
+                test_samples = [pool_samples[i] for i in test_subset.indices]
+
+        total = len(train_samples) + len(val_samples) + len(test_samples)
+        train_size = len(train_samples)
+        val_size = len(val_samples)
+        test_size = len(test_samples)
+        if total == 0:
+            raise ValueError(
+                f"No samples found for dataset_name='{dataset_name}' in data_dir='{data_dir}'. "
+                "For generic datasets, place train/test/dataset CSV files with text and label columns."
+            )
+
+        train_dataset = _build_dataset(train_samples, True)
+        val_dataset = _build_dataset(val_samples, False)
+        test_dataset = _build_dataset(test_samples, False)
+    else:
+        full_samples = list(split_samples["all"])
+        full_dataset = _build_dataset(full_samples, True)
         total = len(full_dataset)
         if total == 0:
             raise ValueError(
@@ -796,11 +799,20 @@ def get_dataloader(
                 "For generic datasets, place train/test/dataset CSV files with text and label columns."
             )
 
+        if len(source_stats) > 1:
+            print(f"\n{'='*50}")
+            print("Combined Dataset Sources")
+            print(f"{'='*50}")
+            for idx, source in enumerate(source_stats, start=1):
+                print(
+                    f"  {idx}. {source['dataset_name']} | "
+                    f"{source['num_samples']} samples | {source['data_dir']}"
+                )
+            print(f"{'='*50}\n")
+
         test_size = int(total * test_split)
         val_size = int(total * val_split)
         train_size = total - val_size - test_size
-
-        # Deterministic split
         generator = torch.Generator().manual_seed(seed)
         train_dataset, val_dataset, test_dataset = random_split(
             full_dataset, [train_size, val_size, test_size], generator=generator
@@ -860,6 +872,7 @@ def get_dataloader(
             "val": val_size,
             "test": test_size,
         },
+        "sources": source_stats,
     }
 
 

@@ -132,7 +132,10 @@ def main():
     parser.add_argument("--config", type=str, default="config/config.yaml", help="Path to config file")
     parser.add_argument("--dataset", type=str, default=None, help="Override dataset name")
     parser.add_argument("--data_dir", type=str, default=None, help="Override data directory")
-    parser.add_argument("--data_dirs", type=str, nargs="+", default=None, help="Override multiple data directories")
+    parser.add_argument("--datasets", nargs="+", default=None,
+                        help="Dataset names for multi-dataset training")
+    parser.add_argument("--data_dirs", nargs="+", default=None,
+                        help="Data directories for multi-dataset training")
     parser.add_argument("--mode", type=str, default="multimodal",
                         choices=["multimodal", "text_only", "image_only"],
                         help="Training mode (for ablation studies)")
@@ -156,6 +159,8 @@ def main():
     if args.data_dir:
         config["data"]["data_dir"] = args.data_dir
         config["data"].pop("data_dirs", None)
+    if args.datasets:
+        config["data"]["dataset_names"] = args.datasets
     if args.data_dirs:
         config["data"]["data_dirs"] = args.data_dirs
         config["data"]["data_dir"] = args.data_dirs[0]
@@ -181,9 +186,11 @@ def main():
     print(f"\n{'#' * 60}")
     print(f"  Multimodal Fake News Detection - Training")
     print(f"{'#' * 60}")
+    active_dataset = config["data"].get("dataset_names", config["data"]["dataset_name"])
+    active_data_dir = config["data"].get("data_dirs", config["data"]["data_dir"])
     print(f"  Mode      : {args.mode}")
-    print(f"  Dataset   : {config['data']['dataset_name']}")
-    print(f"  Data dir  : {config['data'].get('data_dirs', config['data']['data_dir'])}")
+    print(f"  Dataset   : {active_dataset}")
+    print(f"  Data dir  : {active_data_dir}")
     print(f"  Device    : {device}")
     print(f"  Epochs    : {config['training']['num_epochs']}")
     print(f"  Batch size: {config['training']['batch_size']}")
@@ -195,7 +202,7 @@ def main():
     data_cfg = config["data"]
     dataloaders = get_dataloader(
         data_dir=data_cfg.get("data_dirs", data_cfg["data_dir"]),
-        dataset_name=data_cfg["dataset_name"],
+        dataset_name=data_cfg.get("dataset_names", data_cfg["dataset_name"]),
         tokenizer_name=config["model"]["text_encoder"]["name"],
         max_length=config["model"]["text_encoder"]["max_length"],
         image_size=config["model"]["image_encoder"]["image_size"],
@@ -251,13 +258,16 @@ def main():
     import json
     results = {
         "mode": args.mode,
-        "dataset": config["data"]["dataset_name"],
+        "dataset": active_dataset,
+        "data_dir": active_data_dir,
+        "sources": dataloaders.get("sources", []),
         "training": training_result,
         "test_metrics": {k: v for k, v in test_metrics.items()
                         if not isinstance(v, (np.ndarray, list)) or k in ["f1_per_class", "confusion_matrix"]},
     }
 
-    results_path = results_dir / f"results_{args.mode}_{config['data']['dataset_name']}.json"
+    result_suffix = "combined" if isinstance(active_dataset, list) else str(active_dataset)
+    results_path = results_dir / f"results_{args.mode}_{result_suffix}.json"
     with open(results_path, "w") as f:
         json.dump(results, f, indent=2, default=str)
     print(f"\nResults saved to {results_path}")

@@ -200,6 +200,13 @@ python scripts/train.py \
   --lr 3e-5
 ```
 
+### Train On Two Datasets Together
+```bash
+python scripts/train.py \
+  --datasets generic generic \
+  --data_dirs "ISOT Fake News Dataset" "Fake News Dataset"
+```
+
 ### Resume Training
 ```bash
 python scripts/train.py --resume checkpoints/latest_model.pt
@@ -287,6 +294,21 @@ image_only           0.7823       0.7801       0.7823       0.7811       0.5646 
 python scripts/evaluate.py \
   --checkpoint checkpoints/best_model.pt \
   --bootstrap
+```
+
+### Multi-Dataset Benchmark
+```bash
+python scripts/evaluate.py \
+  --checkpoint checkpoints/best_model.pt \
+  --multi_dataset weibo gossipcop politifact
+```
+
+### Evaluate A Combined Two-Dataset Setup
+```bash
+python scripts/evaluate.py \
+  --checkpoint checkpoints/best_model.pt \
+  --datasets generic generic \
+  --data_dirs "ISOT Fake News Dataset" "Fake News Dataset"
 ```
 
 ### Generated Outputs

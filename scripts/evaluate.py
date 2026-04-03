@@ -129,6 +129,8 @@ def evaluate_model(
     config: dict,
     dataset_name: str = None,
     data_dir: str = None,
+    dataset_names: list = None,
+    data_dirs: list = None,
     mode: str = "multimodal",
     device: torch.device = None,
     generate_plots: bool = True,
@@ -148,11 +150,15 @@ def evaluate_model(
     if data_dir:
         config["data"]["data_dir"] = data_dir
         config["data"].pop("data_dirs", None)
+    if dataset_names:
+        config["data"]["dataset_names"] = dataset_names
+    if data_dirs:
+        config["data"]["data_dirs"] = data_dirs
 
     # Load data
     dataloaders = get_dataloader(
         data_dir=config["data"].get("data_dirs", config["data"]["data_dir"]),
-        dataset_name=config["data"]["dataset_name"],
+        dataset_name=config["data"].get("dataset_names", config["data"]["dataset_name"]),
         tokenizer_name=config["model"]["text_encoder"]["name"],
         max_length=config["model"]["text_encoder"]["max_length"],
         image_size=config["model"]["image_encoder"]["image_size"],
@@ -164,7 +170,7 @@ def evaluate_model(
 
     # Load model
     model = MultimodalFakeNewsDetector(config)
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
     print(f"[EVAL] Model loaded from {checkpoint_path}")
 
@@ -363,7 +369,10 @@ def main():
     parser.add_argument("--config", type=str, default="config/config.yaml", help="Config file path")
     parser.add_argument("--dataset", type=str, default=None, help="Dataset to evaluate on")
     parser.add_argument("--data_dir", type=str, default=None, help="Data directory")
-    parser.add_argument("--data_dirs", type=str, nargs="+", default=None, help="Multiple data directories")
+    parser.add_argument("--datasets", nargs="+", default=None,
+                        help="Dataset names for combined evaluation")
+    parser.add_argument("--data_dirs", nargs="+", default=None,
+                        help="Data directories for combined evaluation")
     parser.add_argument("--mode", type=str, default="multimodal",
                         choices=["multimodal", "text_only", "image_only"])
     parser.add_argument("--ablation", action="store_true", help="Run full ablation study")
@@ -410,6 +419,8 @@ def main():
             config=config,
             dataset_name=args.dataset,
             data_dir=args.data_dir,
+            dataset_names=args.datasets,
+            data_dirs=args.data_dirs,
             mode=args.mode,
             device=device,
             compute_bootstrap=args.bootstrap,
