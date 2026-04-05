@@ -56,7 +56,7 @@ def create_app(config_path: str = None, checkpoint_path: str = None) -> Flask:
     # Load model
     if checkpoint_path is None:
         checkpoint_path = config.get("inference", {}).get(
-            "model_checkpoint", "./checkpoints/best_model.pt"
+            "model_checkpoint", "./combined_model_artifacts/checkpoints/best_model_combined.pt"
         )
 
     predictor = None

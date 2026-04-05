@@ -645,7 +645,7 @@ def main():
         # Model checkpoint
         checkpoint_path = st.text_input(
             "Model Checkpoint",
-            value="checkpoints/best_model.pt",
+            value="combined_model_artifacts/checkpoints/best_model_combined.pt",
             help="Path to trained model checkpoint (.pt file)",
         )
 

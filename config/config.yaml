@@ -73,7 +73,7 @@ inference:
   confidence_threshold: 0.5
   host: 0.0.0.0
   max_batch_size: 32
-  model_checkpoint: ./checkpoints/best_model.pt
+  model_checkpoint: ./combined_model_artifacts/checkpoints/best_model_combined.pt
   port: 5000
 
 logging:
